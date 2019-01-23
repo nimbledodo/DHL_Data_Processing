@@ -16,20 +16,47 @@
 
 import os
 import pandas as pd
+import shutil
+import ftplib
 
 
 # rawCsv 및 dailyHeader 파일을 받아 최종 csv 파일을 만들어 저장함
-def makeFinalCsv(header, raw):
+def makeFinalCsv(confs, rawName):
     #
     #   rawCsv 파일 중 dailyHeader에 명시된 데이터만 골라 scale 후 저장
     #   Parameters
+    #       confs: 설정이 담긴 dictionary
+    #       rawName: raw csv 파일 이름
+    #   Local variables
     #       header: Header 정보를 담은 DataFrame, SMPC, Name, 변수설명, Scale, Unit, Column로 구성
     #           SMPC : S, M1, M2,.. P1, P2,.., C1, C2..
     #           Name: 변수이름, 변수설명: 설명, Unit: 값 단위
     #           Scale: -면 음수변환을 해야함, +면 음수변환하지 않음, 절대값은 scale, 즉 최종값 = 기록값*abs(scale)
     #           Column: raw 파일 중 해당 정보가 기록된 컬럼번호
-    #       raw: raw csv 파일의 내용을 담은 DataFrame
+    #       fileName: raw csv 파일 이름
+    #       folder: 파일을 저장할 폴더
     #
+
+    success = True
+
+    # 헤더파일 얻기
+    try:
+        os.chdir(parseDir(confs["HDR_DIR"]))
+        header = pd.read_csv(confs["HDR_FILE"], dtype='unicode', index_col = False)
+    except Exception as exh:
+        print("Cannot open the header file", exh)
+        success = False
+        return
+
+    # Raw 데이터 얻기
+    try:
+        rawfile = getFullPath(confs["RAW_DIR"], rawName)
+        raw = pd.read_csv(rawfile, dtype='unicode', index_col=False)
+    except Exception as exr:
+        print("Cannot open the raw file", exr)
+        success = False
+        return
+
     newDf = pd.DataFrame()    #신규 DataFrame 생성
     newDf['Time'] = raw['Time'] #시간 행은 그대로 복사
 
@@ -43,9 +70,25 @@ def makeFinalCsv(header, raw):
             newDf[name] = scaleValues(rawValues, scale)
     except Exception as ex:
         print("Error in makeFinalCsv", ex)
+        success = False
         pass
 
-    return newDf
+    try:
+        # 헤더만들기
+        src = getFullPath(confs["HDR_DIR"], confs["TMPL_FILE"])
+        dst = getFullPath(confs["SAVE_DIR"], confs["SAVE_PREFIX"]+rawName)
+        shutil.copyfile(src,dst)
+        # 파일 쓰기
+        newDf.to_csv(dst, mode='a', index=False, header=None)
+    except Exception as ex1:
+        print("Cannot save file", ex)
+        success = False
+        pass
+
+    # 예외가 발생하지 않고 무사히 진행되었으면 raw data는 지움
+    if success:
+        os.remove(rawfile)
+    return
 
 # list를 입력받아 scale해서 내보냄
 def scaleValues(rawValues, scale):
@@ -87,31 +130,86 @@ def scaleValues(rawValues, scale):
 
 # Windows 경로 표현방식을 Python에서 읽을 수 있는 방식으로 바꿔줌
 def parseDir(oldDir):
-    return oldDir.replace('\\', '/')
+    return oldDir.replace("\\", "/")
 
+# 폴더명과 파일명을 받아 full file 경로를 돌려줌
+def getFullPath(dir,file):
+    return parseDir(dir)+"/"+file
 
+# 데이터 처리 기본 세팅 설정
+def setConfig():
+    confs = {}
+    cwd = os.getcwd()   # 현재 디렉토리
+    # 인자가 없을 경우 기본값
+    CONF_INIT = "init.conf" # 변경을 원하는 default variable을 저장하는 파일명
+    CONF_DIR = cwd # 기본값은 실행경로과 동일한 경로
+    # 인자가 있을 경우 argv[1]은 파일명, argv[2]는 폴더 경로
+    try:
+        if len(sys.argv)>=2:
+            CONF_INIT = sys.argv[1] #CONF_INIT 파일명
+        if len(sys.argv)==3:
+            CONF_DIR = sys.argv[2] #CONF_INIT 파일 저장 경로
+    except:
+        pass
+
+    # CONF_DIR\CONF_INIT 파일에 해당 데이터가 없을 경우 default value로 대신함
+    confs["HDR_DIR"] = cwd  # 헤더파일이 저장된 폴더
+    confs["HDR_FILE"] = "dailyHeader.csv"  # 헤더파일명
+    confs["TMPL_FILE"] = "templateDaily.csv"    #매일 저장파일의 헤더가 기록된 파일명
+    confs["RAW_DIR"] = cwd  # Raw 데이터가 저장된 폴더
+    confs["SAVE_DIR"] = cwd  # 데이터가 저장될 폴더
+    confs["SAVE_PREFIX"] = ""  # 데이터는 prefix+날짜명.csv 로 저장됨
+    confs["FTP_SERVER"] = ""  # FTP 서버 주소
+    confs["FTP_PORT"] = 21  # FTP 포트
+    confs["FTP_ID"] = "pi"  # FTP login id
+    confs["FTP_PW"] = "raspberry" # FTP login passwd
+    confs["FTP_DIR"] = ""   # FTP에서 데이터가 저장된 폴더
+
+    # CONF_DIR가 공란이면 현재 디렉토리에서 CONF_INIT을 찾음
+
+    try:
+        os.chdir(parseDir(CONF_DIR))
+        lines = open(CONF_INIT, 'r', encoding='utf-8').readlines()
+    except:
+        # 폴더나 파일이 존재하지 않으면 기본값 그대로 사용
+        print("Config file does not exist")
+        pass
+    for line in lines:
+        if line[0] != "#":
+            k, v = line.strip('\n').split(',')
+            try:
+                confs[k] = int(v)  # 숫자의 경우 int로 변환
+            except:
+                confs[k] = v  # 문자면 그냥 둠
+
+    return confs
+
+# ftp 접속하여 파일 저장
+def getRemoteFile(confs, filename):
+
+    ftp = ftplib.FTP()
+    ftp.connect(confs["FTP_SERVER"], confs["FTP_PORT"])
+    ftp.login(confs["FTP_ID"], confs["FTP_PW"])
+    ftp.cwd(parseDir(confs["FTP_DIR"]))
+    fd = open(parseDir(confs["RAW_DIR"]) + "/" + filename, 'wb')
+    ftp.retrbinary("RETR " + filename, fd.write)
+    fd.close()
+    return
 
 if __name__ == "__main__":
+
+    # 데이터 세팅 저장
+    confs = setConfig()
+
     # 아래 내용을 주어진 날짜에 대해 반복
 
     # ftp 접속하여 csv 파일 받아옴
+    filename = "2019-01-20.csv"
+
+    getRemoteFile(confs, filename)
 
     # csv 파일을 처리하여 매일 데이터 저장으로 만듬
-    confFolder = "I:\내 드라이브\Project\[2018] 동현물류\운행기록\conf"
-    os.chdir(parseDir(confFolder))
-    headerName = "dailyHeader.csv"
-
-    dfHeader = pd.read_csv(headerName, dtype='unicode', index_col=False)
-
-
-    dataFolder = "C:/Users/Jeehyang/Desktop"
-    os.chdir(parseDir(dataFolder))
-    rawName = "2019-01-20.csv"
-    rawCsv = pd.read_csv(rawName, dtype='unicode', index_col=False)
-
-    newDf = makeFinalCsv(dfHeader, rawCsv)
-
-    newDf.to_csv("test3.csv", mode='w',index=False)
+    makeFinalCsv(confs, filename)
 
     # csv 파일을 처리하여 요금분석용 데이터만 뽑음
 
