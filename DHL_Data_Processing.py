@@ -16,9 +16,11 @@
 
 import os
 import pandas as pd
+import numpy as np
 import shutil
 import ftplib
 import datetime
+import csv
 
 # 데이터 처리 기본 세팅 설정
 def setConfig():
@@ -38,20 +40,26 @@ def setConfig():
 
     # CONF_DIR\CONF_INIT 파일에 해당 데이터가 없을 경우 default value로 대신함
     confs["HDR_DIR"] = cwd  # 헤더파일이 저장된 폴더
-    confs["HDR_FILE"] = "dailyHeader.csv"  # daily 헤더파일명
-    confs["MONTHLY_FILE"] = "monthlyHeader.csv" #montly 헤더파일명
-    confs["TMPL_FILE"] = "templateDaily.csv"    #daily 저장파일의 헤더가 기록된 파일명
+    confs["DAILY_HDR"] = "dailyHeader.csv"  # daily 헤더파일명
+    confs["MONTHLY_FILE"] = "monthlyHeader.csv" # montly 헤더파일명
+    confs["TMPL_DAILY"] = "templateDaily.csv"    # daily 저장파일의 헤더가 기록된 파일명
     confs["RAW_DIR"] = cwd  # Raw 데이터가 저장된 폴더
     confs["SAVE_DIR"] = cwd  # 데이터가 저장될 폴더
     confs["SAVE_SKIP"] = 1  # daily 데이터를 skip할 간격
-    confs["SAVE_PREFIX"] = ""  # 데이터는 prefix+날짜명.csv 로 저장됨
+    confs["SAVE_PREFIX"] = "d_"  # 데이터는 prefix+날짜명.csv 로 저장됨
     confs["MONTHLY_SKIP"] = 6   # montly 데이터를 skip할 간격
     confs["MONTHLY_PREFIX"] = "m_" # montly 데이터는 prefix+연월.csv로 저장됨
+    confs["EFF_HDR"] = 'effHeader.csv' # efficiency 계산용 헤더파일명
+    confs["EFF_FILE"] = 'efficiency.csv'    #efficiency 결과가 저장될 파일명
+    confs["EFF_SKIP"] = 6   # efficiency 계산 시 skip 간격
     confs["FTP_SERVER"] = ""  # FTP 서버 주소
     confs["FTP_PORT"] = 21  # FTP 포트
     confs["FTP_ID"] = "pi"  # FTP login id
     confs["FTP_PW"] = "raspberry" # FTP login passwd
     confs["FTP_DIR"] = ""   # FTP에서 데이터가 저장된 폴더
+    confs["MS_SEP"] = '/'  # 모듈번호 및 스택번호의 구분자
+    confs["MODULES"] = ""   # 효율 계산에서 사용할 모듈 번호
+    confs["STACKS"] = ""    # 효율 계산에서 사용할 스택 번호
 
     # CONF_DIR가 공란이면 현재 디렉토리에서 CONF_INIT을 찾음
 
@@ -73,10 +81,12 @@ def setConfig():
 
     return confs
 
-# rawCsv 및 dailyHeader 파일을 받아 최종 csv 파일을 만들어 저장함
-def makeFinalCsv(confs, rawName):
+# rawCsv을 받아 daily csv 저장, monthly csv 업데이트, 시스템 및 스택 효율정보 업데이트
+def processData(confs, rawName):
     #
-    #   rawCsv 파일 중 dailyHeader에 명시된 데이터만 골라 scale 후 저장
+    #   1. rawCsv 파일 중 dailyHeader에 명시된 데이터만 골라 scale 후 저장
+    #   2. monthly 파일에 저장할 항목은 별도 저장
+    #   3. 스택 및 시스템 효율을 보기위한 정보 처리
     #   Parameters
     #       confs: 설정이 담긴 dictionary
     #       rawName: raw csv 파일 이름
@@ -93,7 +103,7 @@ def makeFinalCsv(confs, rawName):
     # 헤더파일 얻기
     try:
         os.chdir(parseDir(confs["HDR_DIR"]))
-        header = pd.read_csv(confs["HDR_FILE"], dtype='unicode', index_col = False)
+        header = pd.read_csv(confs["DAILY_HDR"], dtype='unicode', index_col = False)
     except Exception as exh:
         print("Cannot open the header file. ", exh)
         return False
@@ -123,20 +133,25 @@ def makeFinalCsv(confs, rawName):
 
     try:
         # 헤더만들기
-        src = getFullPath(confs["HDR_DIR"], confs["TMPL_FILE"])
+        src = getFullPath(confs["HDR_DIR"], confs["TMPL_DAILY"])
         dst = getFullPath(confs["SAVE_DIR"], confs["SAVE_PREFIX"]+rawName)
         shutil.copyfile(src,dst)
         # 파일 쓰기
         newDf[::confs["SAVE_SKIP"]].to_csv(dst, mode='a', index=False, header=None)  #일정시간 간격으로 추출한 것 저장
         print("Successfully generated daily file: ", confs["SAVE_PREFIX"]+rawName)
-        success = makeMonthlyData(confs, newDf[::confs["MONTHLY_SKIP"]], getMonthlyFileName(confs, rawName))
+        os.remove(rawfile)
     except Exception as ex1:
         print("Cannot save daily file: ", rawName,  ex)
         return False
 
-    # 예외가 발생하지 않고 무사히 진행되었으면 raw data는 지움
-    if success:
-        os.remove(rawfile)
+    # monthly data 저장하기
+    success = makeMonthlyData(confs, newDf[::confs["MONTHLY_SKIP"]], getMonthlyFileName(confs, rawName))
+    if not success:
+        return False
+
+    # efficiency 계산하기
+    dateStr = getDate(rawName, 'YYYY-MM-DD.csv').isoformat()
+    success = calculateEff(confs, newDf[::confs["EFF_SKIP"]], dateStr)
 
     return success
 
@@ -307,20 +322,161 @@ def getDate(dateStr, format):
 
     return datetime.date(year, month, day)
 
+# df를 받아 충방전량, 효율을 계산함
+def calculateEff(confs, df, dateStr):
+    #
+    #   dataframe을 입력받아 각 모듈 및 스택별 충방전양, VE, EE를 계산함
+    #   Parameters
+    #       confs: 설정이 담긴 dictionary
+    #       df: 각종 정보가 담긴 df
+    #       dateStr: 날짜 (iso-format)
+    #
+
+    POWER_ZERO_CUT = 1  # 0으로 간주할 power의 절대값
+    # 사용할 모듈번호 list
+    modules = list(map(int, confs['MODULES'].split(confs['MS_SEP'])))
+    # 사용할 스택번호 list
+    stacks = list(map(int, confs['STACKS'].split(confs['MS_SEP'])))
+
+    newDf = pd.DataFrame()    # 신규 DataFrame 생성
+    tmp = pd.DataFrame()    # 계산결과 임시저장용 dataframe
+
+    results = [dateStr]    # 결과 데이터 저장 (처음 데이터는 날짜)
+
+    # 계산에 필요한 필요한 데이터 헤더파일 읽어옴
+    try:
+        os.chdir(parseDir(confs["HDR_DIR"]))
+        header = pd.read_csv(confs["EFF_HDR"], dtype='unicode', index_col=False)
+        print("Successfully read efficiency header file")
+    except Exception as exh:
+        print("Cannot open the efficiency header file: ", exh)
+        return False
+
+    # 필요한 데이터만 추출 (시간, 각 스택 전압, 각 모듈별 전류)
+    # 단, 필요한 데이터는 모두 header에 기록되어있다고 가정함
+    try:
+        for i in range(len(header)):
+            col = int(header.iloc[i].Col)  # 값이 들어있는 컬럼번호
+            name = header.iloc[i].Name
+            valueList = df.iloc[:, col].tolist()
+            newDf[name] = valueList
+    except Exception as ex:
+        print("Error in making monthly data: ", ex)
+        return False
+
+    # 시간차 계산
+    newDf['Time'] = pd.to_datetime(newDf['Time'], format = '%Y-%m-%d %H:%M:%S')
+    dt = newDf['Time'].diff().apply(lambda x: x/np.timedelta64(1, 's')/3600).fillna(0)  # hr로 환산한 시간차
+
+    # 에너지 및 효율 계산
+    try:
+        for m in modules:
+            m_str = str(m)
+            cur = newDf['M'+m_str+".Cur"]   # 전체전류
+            vol = newDf['M'+m_str+".Vol"]   # 전체전압
+            results = results + calEnergyAndEff(vol, cur, dt)
+            for s in stacks:
+                s_str = str(s)
+                vol = newDf['M'+m_str+".Vol"+s_str]
+                results = results + calEnergyAndEff(vol, cur, dt)
+        print("Successfully calculated energies and efficiencies")
+    except Exception as ex2:
+        print("Error in calculating energies and efficiencies. ", ex2)
+        return False
+
+    # 데이터 저장
+    try:
+        dst = getFullPath(parseDir(confs["SAVE_DIR"]), confs["EFF_FILE"])
+        with open(dst, 'a', newline='') as csvFile:
+            writer = csv.writer(csvFile)
+            if os.path.getsize(dst) == 0:
+                writer.writerow(getEffHeader(modules, stacks))
+            writer.writerow(results)
+        print("successfully updated efficiency file.")
+    except Exception as ex3:
+        print("Error in updating efficiency file. ", ex3)
+        return False
+
+    return True
+
+# efficiency file의 헤더를 쓴다
+def getEffHeader(modules, stacks):
+    #
+    #   Parameters
+    #       modules: 사용할 모듈 번호 (in list)
+    #       stacks: 사용할 스택 번호 (in list)
+    #   efficiency header의 구조
+    #       [시간, 모듈 1 정보, 모듈 2 정보...]
+    #       모듈 정보 = [스택 1 정보, 스택 2 정보, ]
+    #       스택 정보 = charge energy, discharge energy, voltage efficiency, energy efficiency
+
+    header = ['Date']
+
+    for m in modules:
+        m_str = 'M'+str(m)+'.'
+        header = header + [m_str + 'chE', m_str + 'dischE', m_str + 'VE', m_str + 'EE']
+        for s in stacks:
+            s_str = m_str + 'S'+str(s)+'.'
+            header = header + [s_str + 'chE', s_str + 'dischE', s_str + 'VE', s_str + 'EE']
+    return header
+
+# Voltage, Cur, dt를 받아 charge energy, discharge energy, EE, VE를 계산
+def calEnergyAndEff(vol, cur, dt):
+    #
+    #   Parameters
+    #       vol: voltage (dataframe 형식)
+    #       cur: current (dataframe 형식)
+    #       dt: delta t in hr (dataframe 형식)
+    #   Return
+    #       [charge energy, discharge energy, voltage efficiency, energy efficiency]
+    #
+
+    MIN_POWER = 2000    # in W, 이 이상의 power가 아니면 없는 것으로 간주함
+    E_DECIMAL = 1   # 에너지 소수점 수
+    EFF_DECIMAL = 3 # 효율 소수점 수
+    # 전력계산
+    power = (cur * vol).apply(lambda x: (0 if abs(x) < MIN_POWER else x))   # power = cur * vol
+    # 충방전 여부 판단
+    ifCharge = power.apply(lambda x: (1 if x > 0 else 0))   # 충전이면 1, 아니면 0
+    ifDischarge = power.apply(lambda x: (1 if x < 0 else 0))    # 방전이면 1, 아니면 0
+    # 충전에너지 (in kWh) (충전 시 power*dt의 합)
+    chE = round((power * ifCharge * dt).sum() / 1000.0, E_DECIMAL)
+    # 방전에너지 (in kWh) (방전 시 power*dt의 합)
+    dischE = -round((power * ifDischarge * dt).sum() / 1000.0, E_DECIMAL)
+    # EE 계산
+    try:
+        EE = round( dischE / chE, EFF_DECIMAL)
+    except:
+        EE = 0  # 값 에러면 0으로 표시
+    # 평균 충전전압 (충전 시 voltage 합 / 충전 시간 수 합)
+    try:
+        avgVch = (vol * ifCharge).sum() / ifCharge.sum()
+    except:
+        avgVch = 0  # 충전이 없으면 0으로 표시
+    # 평균 방전전압 (방전 시 voltage 합 / 방전 시간 수 합)
+    try:
+        avgVdisch = (vol * ifDischarge).sum() / ifDischarge.sum()
+    except:
+        avgVdisch = 0  # 방전이 없으면 0으로 표시
+    # VE 계산 (평균 방전전압/평균 충전전압)
+    try:
+        VE = round( avgVdisch / avgVch, EFF_DECIMAL)
+    except:
+        VE = 0  # 값 에러면 0으로 표시
+    return [chE, dischE, VE, EE]
+
 if __name__ == "__main__":
 
     # 데이터 세팅 저장
     confs = setConfig()
 
-    start = "190123"
-    end = "190125"
+    start = "190115"
+    end = "190122"
     dateFormat = "yymmdd"
 
     startD = getDate(start, dateFormat)
     endD = getDate(end, dateFormat)
     diff = endD - startD
-
-    success = True
 
     # 날짜에 대해서 반복
     for day in range(diff.days + 1):
@@ -331,20 +487,20 @@ if __name__ == "__main__":
         # ftp 접속하여 csv 파일 받아옴
         success = getRemoteFile(confs, filename)
 
-        # csv 파일을 처리하여 매일 데이터 저장으로 만듬
-        success = makeFinalCsv(confs, filename)
+        # rawCsv을 받아 daily csv 저장, monthly csv 업데이트, 시스템 및 스택 효율정보 업데이트
+        success = processData(confs, filename)
 
         # 함수 실행에 실패하면 다음 날짜로 진행하지 않음
         if not success:
             print("Quit due to error, day = ", isodate)
             break
 
-    # csv 파일을 처리하여 스택 및 시스템 효율 분석
-
     # 구글드라이브의 요금분석 데이터 업데이트
         # 이건 script 파일로 처리 필요
 
     # 구글드라이브의 스택 효율 시트 업데이트
         # 이것도 script 파일로 처리 필요
+
+    # 구글 시트의 매일 저장된 데이터를 읽어 원하는 column만 정해진 기간 동안 일정 간격을 두고 뽑아서 csv로 저장 혹은 그래프 그릴 수 있는 함수 만들기!
 
     pass
