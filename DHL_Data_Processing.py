@@ -89,7 +89,6 @@ def makeFinalCsv(confs, rawName):
     #       fileName: raw csv 파일 이름
     #       folder: 파일을 저장할 폴더
     #
-    success = True
 
     # 헤더파일 얻기
     try:
@@ -97,8 +96,7 @@ def makeFinalCsv(confs, rawName):
         header = pd.read_csv(confs["HDR_FILE"], dtype='unicode', index_col = False)
     except Exception as exh:
         print("Cannot open the header file. ", exh)
-        success = False
-        return
+        return False
 
     # Raw 데이터 얻기
     try:
@@ -106,8 +104,7 @@ def makeFinalCsv(confs, rawName):
         raw = pd.read_csv(rawfile, dtype='unicode', index_col=False)
     except Exception as exr:
         print("Cannot open the raw file. ", exr)
-        success = False
-        return
+        return False
 
     newDf = pd.DataFrame()    #신규 DataFrame 생성
     newDf['Time'] = raw['Time'] #시간 행은 그대로 복사
@@ -122,8 +119,7 @@ def makeFinalCsv(confs, rawName):
             newDf[name] = scaleValues(rawValues, scale)
     except Exception as ex:
         print("Error in processing raw file: ", rawName, ex)
-        success = False
-        pass
+        return False
 
     try:
         # 헤더만들기
@@ -133,16 +129,16 @@ def makeFinalCsv(confs, rawName):
         # 파일 쓰기
         newDf[::confs["SAVE_SKIP"]].to_csv(dst, mode='a', index=False, header=None)  #일정시간 간격으로 추출한 것 저장
         print("Successfully generated daily file: ", confs["SAVE_PREFIX"]+rawName)
-        makeMonthlyData(confs, newDf[::confs["MONTHLY_SKIP"]], getMonthlyFileName(confs, rawName))
+        success = makeMonthlyData(confs, newDf[::confs["MONTHLY_SKIP"]], getMonthlyFileName(confs, rawName))
     except Exception as ex1:
         print("Cannot save daily file: ", rawName,  ex)
-        success = False
-        pass
+        return False
 
     # 예외가 발생하지 않고 무사히 진행되었으면 raw data는 지움
     if success:
         os.remove(rawfile)
-    return
+
+    return success
 
 # raw file명을 입력받아 monthly 파일 이름을 돌려줌
 def getMonthlyFileName(confs, rawName):
@@ -172,7 +168,7 @@ def makeMonthlyData(confs, df, filename):
         header = pd.read_csv(confs["MONTHLY_FILE"], dtype='unicode', index_col=False)
     except Exception as exh:
         print("Cannot open the monthly header file: ", exh)
-        return
+        return False
 
     # 데이터에서 필요한 부분만 추출
     try:
@@ -183,7 +179,7 @@ def makeMonthlyData(confs, df, filename):
             newDf[name] = valueList
     except Exception as ex:
         print("Error in making monthly data: ", ex)
-        pass
+        return False
 
     # 파일 저장
     try:
@@ -198,9 +194,9 @@ def makeMonthlyData(confs, df, filename):
         print("Successfully updated monthly data: ", filename)
     except Exception as ex1:
         print("Error in writing monthly data. ", ex1)
-        pass
+        return False
 
-    return
+    return True
 
 # list를 입력받아 scale해서 내보냄
 def scaleValues(rawValues, scale):
@@ -251,14 +247,20 @@ def getFullPath(dir,file):
 # ftp 접속하여 파일 저장
 def getRemoteFile(confs, filename):
 
-    ftp = ftplib.FTP()
-    ftp.connect(confs["FTP_SERVER"], confs["FTP_PORT"])
-    ftp.login(confs["FTP_ID"], confs["FTP_PW"])
-    ftp.cwd(parseDir(confs["FTP_DIR"]))
-    fd = open(parseDir(confs["RAW_DIR"]) + "/" + filename, 'wb')
-    ftp.retrbinary("RETR " + filename, fd.write)
-    fd.close()
-    return
+    try:
+        ftp = ftplib.FTP()
+        ftp.connect(confs["FTP_SERVER"], confs["FTP_PORT"])
+        ftp.login(confs["FTP_ID"], confs["FTP_PW"])
+        ftp.cwd(parseDir(confs["FTP_DIR"]))
+        fd = open(parseDir(confs["RAW_DIR"]) + "/" + filename, 'wb')
+        ftp.retrbinary("RETR " + filename, fd.write)
+        fd.close()
+        print ("Successfully downloaded the raw data: ", filename)
+    except Exception as ex:
+        print ("Error getting a file from the ftp server: ", filename, ex)
+        return False
+
+    return True
 
 # 날짜 string과 format을 받아 datetime 형식으로 돌려줌
 def getDate(dateStr, format):
@@ -310,30 +312,39 @@ if __name__ == "__main__":
     # 데이터 세팅 저장
     confs = setConfig()
 
-    start = "190115"
-    end = "190122"
+    start = "190123"
+    end = "190125"
     dateFormat = "yymmdd"
 
     startD = getDate(start, dateFormat)
     endD = getDate(end, dateFormat)
     diff = endD - startD
 
+    success = True
+
     # 날짜에 대해서 반복
     for day in range(diff.days + 1):
-        date = startD + datetime.timedelta(day)
-        filename = date.isoformat()+'.csv'
-        print(filename)
+        isodate = (startD + datetime.timedelta(day)).isoformat()
+        filename = isodate+'.csv'
+        print("Processing: ", isodate)
 
         # ftp 접속하여 csv 파일 받아옴
-        getRemoteFile(confs, filename)
+        success = getRemoteFile(confs, filename)
 
         # csv 파일을 처리하여 매일 데이터 저장으로 만듬
-        makeFinalCsv(confs, filename)
+        success = makeFinalCsv(confs, filename)
 
-    # 구글드라이브의 요금분석 데이터 업데이트
+        # 함수 실행에 실패하면 다음 날짜로 진행하지 않음
+        if not success:
+            print("Quit due to error, day = ", isodate)
+            break
 
     # csv 파일을 처리하여 스택 및 시스템 효율 분석
 
+    # 구글드라이브의 요금분석 데이터 업데이트
+        # 이건 script 파일로 처리 필요
+
     # 구글드라이브의 스택 효율 시트 업데이트
+        # 이것도 script 파일로 처리 필요
 
     pass
