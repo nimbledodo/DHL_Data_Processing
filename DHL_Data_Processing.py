@@ -18,6 +18,7 @@ import os
 import pandas as pd
 import shutil
 import ftplib
+import datetime
 
 # 데이터 처리 기본 세팅 설정
 def setConfig():
@@ -260,28 +261,74 @@ def getRemoteFile(confs, filename):
     return
 
 # 날짜 string과 format을 받아 datetime 형식으로 돌려줌
-def getDate(dateStr,format):
+def getDate(dateStr, format):
     #
     # Parameters
+    #   dateStr: 날짜 문자열
+    #   format: 날짜 문자열 형식 (대소문자 구분 안함)
+    #           Y: 연도 (YYYY이면 2018, YY 면 18)
+    #           M: 월 (항상 leading zero를 포함할 것!)
+    #           D: 일 (항상 leading zero를 포함할 것!)
+    #
+    #       ex) YYMMDD: 190212, MM/DD/YY: 02/23/18, dd-mm-yyyy: 23-01-2018
     #
 
-    pass
+    format = format.upper()
+
+    #연도찾기
+    cYear = format.count('YY')  #year가 발생한 횟수
+    if cYear == 1:  # 연도가 두 자리 형식일 경우
+        loc = format.find('YY') #year의 위치
+        year = 2000 + int(dateStr[loc:loc+2])
+    elif cYear == 2:    #연도가 네 자리 형식일 경우
+        loc = format.find('YYYY')   #year의 위치
+        year = int(dateStr[loc:loc+4])
+    else:
+        print("Year does not exist")
+        return
+
+    #월 찾기
+    loc = format.find('MM')    #month의 위치
+    if loc != -1:  # 월이 두자리 형식
+        month = int(dateStr[loc:loc+2])
+    else:
+        print("Month does not exist")
+        return
+
+    #일 찾기
+    loc = format.find('DD')    #day의 위치
+    if loc != -1:  # 월이 두자리 형식
+        day = int(dateStr[loc:loc+2])
+    else:
+        print("Day does not exist")
+        return
+
+    return datetime.date(year, month, day)
 
 if __name__ == "__main__":
 
     # 데이터 세팅 저장
     confs = setConfig()
 
-    # 날짜에 대해 반복
     start = "190115"
     end = "190122"
+    dateFormat = "yymmdd"
 
+    startD = getDate(start, dateFormat)
+    endD = getDate(end, dateFormat)
+    diff = endD - startD
 
-    # ftp 접속하여 csv 파일 받아옴
-    getRemoteFile(confs, filename)
+    # 날짜에 대해서 반복
+    for day in range(diff.days + 1):
+        date = startD + datetime.timedelta(day)
+        filename = date.isoformat()+'.csv'
+        print(filename)
 
-    # csv 파일을 처리하여 매일 데이터 저장으로 만듬
-    makeFinalCsv(confs, filename)
+        # ftp 접속하여 csv 파일 받아옴
+        getRemoteFile(confs, filename)
+
+        # csv 파일을 처리하여 매일 데이터 저장으로 만듬
+        makeFinalCsv(confs, filename)
 
     # 구글드라이브의 요금분석 데이터 업데이트
 
