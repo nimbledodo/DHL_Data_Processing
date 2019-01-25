@@ -14,13 +14,14 @@
 ************************************************************************************
  '''
 
+import csv
+import datetime
+import ftplib
+import numpy as np
 import os
 import pandas as pd
-import numpy as np
 import shutil
-import ftplib
-import datetime
-import csv
+
 
 # 데이터 처리 기본 세팅 설정
 def setConfig():
@@ -339,7 +340,6 @@ def calculateEff(confs, df, dateStr):
     stacks = list(map(int, confs['STACKS'].split(confs['MS_SEP'])))
 
     newDf = pd.DataFrame()    # 신규 DataFrame 생성
-    tmp = pd.DataFrame()    # 계산결과 임시저장용 dataframe
 
     results = [dateStr]    # 결과 데이터 저장 (처음 데이터는 날짜)
 
@@ -361,7 +361,7 @@ def calculateEff(confs, df, dateStr):
             valueList = df.iloc[:, col].tolist()
             newDf[name] = valueList
     except Exception as ex:
-        print("Error in making monthly data: ", ex)
+        print("In module calculateEff: Error in reading data: ", ex)
         return False
 
     # 시간차 계산
@@ -534,25 +534,91 @@ def calEnergyAndEff(vol, cur, dt):
         CE = 0
     return [chE, dischE, EE, VE, CE]
 
+
+# 효율분석용 데이터 저장된 것에서 VE, CE 다시 계산
+def tempCalculateEff(confs, date):
+
+    POWER_ZERO_CUT = 1  # 0으로 간주할 power의 절대값
+    # 사용할 모듈번호 list
+    modules = list(map(int, confs['MODULES'].split(confs['MS_SEP'])))
+    # 사용할 스택번호 list
+    stacks = list(map(int, confs['STACKS'].split(confs['MS_SEP'])))
+
+    dateStr = date.isoformat()
+    fileName = str(date.year)[2:]+str(date.month).zfill(2)+str(date.day).zfill(2)+'.csv'
+
+    # 파일 읽어와서 df로 저장
+
+    os.chdir(parseDir(confs["SAVE_DIR"]))
+    df = pd.read_csv(fileName, dtype='unicode', index_col=False, )
+
+    newDf = pd.DataFrame()  # 신규 DataFrame 생성
+
+    results = [dateStr]  # 결과 데이터 저장 (처음 데이터는 날짜)
+
+    # 계산에 필요한 필요한 데이터 헤더파일 읽어옴
+    try:
+        os.chdir(parseDir(confs["HDR_DIR"]))
+        header = pd.read_csv(confs["EFF_HDR"], dtype='unicode', index_col=False)
+        print("Successfully read efficiency header file")
+    except Exception as exh:
+        print("Cannot open the efficiency header file: ", exh)
+        return False
+
+    # 필요한 데이터만 추출 (시간, 각 스택 전압, 각 모듈별 전류)
+    # 단, 필요한 데이터는 모두 header에 기록되어있다고 가정함
+    try:
+        for i in range(len(header)):
+            col = int(header.iloc[i].Col)  # 값이 들어있는 컬럼번호
+            name = header.iloc[i].Name
+            # 시간은 시간으로 변환
+            if name == "Time":
+                valueList = df.iloc[:, col].tolist()
+            # 나머지는 float 형으로 변환
+            else:
+                valueList = list(map(float, df.iloc[:, col].tolist()))
+            newDf[name] = valueList
+    except Exception as ex:
+        print("In module tempCalculateEff: Error reading data: ", ex)
+        return False
+
+    # 시간차 계산
+    newDf['Time'] = pd.to_datetime(newDf['Time'], format='%Y-%m-%d %H:%M:%S')
+    dt = newDf['Time'].diff().apply(lambda x: x/np.timedelta64(1, 's')/3600).fillna(0)  # hr로 환산한 시간차
+
+    # 에너지 및 효율 계산
+    try:
+        for m in modules:
+            m_str = str(m)
+            cur = newDf['M'+m_str+".Cur"]   # 전체전류
+            vol = newDf['M'+m_str+".Vol"]   # 전체전압
+            results = results + calEnergyAndEff(vol, cur, dt)
+            for s in stacks:
+                s_str = str(s)
+                vol = newDf['M'+m_str+".Vol"+s_str]
+                results = results + calEnergyAndEff(vol, cur, dt)
+        print("Successfully calculated energies and efficiencies")
+    except Exception as ex2:
+        print("Error in calculating energies and efficiencies. ", ex2)
+        return False
+
+    # 데이터 저장
+    try:
+        dst = getFullPath(parseDir(confs["SAVE_DIR"]), confs["EFF_FILE"])
+        saveEff(dst, modules, stacks, results)
+        print("successfully updated efficiency file.")
+    except Exception:
+        return False
+
+    return True
+
 if __name__ == "__main__":
 
     # 데이터 세팅 저장
     confs = setConfig()
 
-    # # 사용할 모듈번호 list
-    # modules = list(map(int, confs['MODULES'].split(confs['MS_SEP'])))
-    # # 사용할 스택번호 list
-    # stacks = list(map(int, confs['STACKS'].split(confs['MS_SEP'])))
-    #
-    # originalHeader = getOriginalEffHeader(modules, stacks)
-    # newHeader = getEffHeader(modules, stacks)
-    #
-    # oldData = pd.DataFrame(results, header=originalHeader, index=None)
-    #
-    # newData = pd.DataFrame(header=originalHeader, index=None)
-
-    start = "190120"
-    end = "190121"
+    start = "180316"
+    end = "190114"
     dateFormat = "yymmdd"
 
     startD = getDate(start, dateFormat)
@@ -565,16 +631,18 @@ if __name__ == "__main__":
         filename = isodate+'.csv'
         print("Processing: ", isodate)
 
-        # ftp 접속하여 csv 파일 받아옴
-        success = getRemoteFile(confs, filename)
+        tempCalculateEff(confs, startD + datetime.timedelta(day))
 
-        # rawCsv을 받아 daily csv 저장, monthly csv 업데이트, 시스템 및 스택 효율정보 업데이트
-        success = processData(confs, filename)
-
-        # 함수 실행에 실패하면 다음 날짜로 진행하지 않음
-        if not success:
-            print("Quit due to error, day = ", isodate)
-            break
+        # # ftp 접속하여 csv 파일 받아옴
+        # success = getRemoteFile(confs, filename)
+        #
+        # # rawCsv을 받아 daily csv 저장, monthly csv 업데이트, 시스템 및 스택 효율정보 업데이트
+        # success = processData(confs, filename)
+        #
+        # # 함수 실행에 실패하면 다음 날짜로 진행하지 않음
+        # if not success:
+        #     print("Quit due to error, day = ", isodate)
+        #     break
 
     # 구글드라이브의 요금분석 데이터 업데이트
         # 이건 script 파일로 처리 필요
