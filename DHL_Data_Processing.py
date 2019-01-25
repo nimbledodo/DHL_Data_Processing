@@ -443,26 +443,19 @@ def calEnergyAndEff(vol, cur, dt):
     chE = round((power * ifCharge * dt).sum() / 1000.0, E_DECIMAL)
     # 방전에너지 (in kWh) (방전 시 power*dt의 합)
     dischE = -round((power * ifDischarge * dt).sum() / 1000.0, E_DECIMAL)
-    # EE 계산
-    try:
+    # 충전, 방전이 모두 일어난 경우에만 계산
+    if chE != 0 and dischE!=0:
+        # EE 계산
         EE = round( dischE / chE, EFF_DECIMAL)
-    except:
-        EE = 0  # 값 에러면 0으로 표시
-    # 평균 충전전압 (충전 시 voltage 합 / 충전 시간 수 합)
-    try:
+        # 평균 충전전압 (충전 시 voltage 합 / 충전 시간 수 합)
         avgVch = (vol * ifCharge).sum() / ifCharge.sum()
-    except:
-        avgVch = 0  # 충전이 없으면 0으로 표시
-    # 평균 방전전압 (방전 시 voltage 합 / 방전 시간 수 합)
-    try:
+        # 평균 방전전압 (방전 시 voltage 합 / 방전 시간 수 합)
         avgVdisch = (vol * ifDischarge).sum() / ifDischarge.sum()
-    except:
+        # VE 계산 (평균 방전전압/평균 충전전압)
         avgVdisch = 0  # 방전이 없으면 0으로 표시
-    # VE 계산 (평균 방전전압/평균 충전전압)
-    try:
-        VE = round( avgVdisch / avgVch, EFF_DECIMAL)
-    except:
-        VE = 0  # 값 에러면 0으로 표시
+    else:
+        EE = 0 # 충전이 안되었을 경우 0으로 표기
+        VE = 0
     return [chE, dischE, VE, EE]
 
 if __name__ == "__main__":
@@ -470,8 +463,8 @@ if __name__ == "__main__":
     # 데이터 세팅 저장
     confs = setConfig()
 
-    start = "190115"
-    end = "190122"
+    start = "190120"
+    end = "190120"
     dateFormat = "yymmdd"
 
     startD = getDate(start, dateFormat)
