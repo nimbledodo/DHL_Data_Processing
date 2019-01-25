@@ -387,17 +387,84 @@ def calculateEff(confs, df, dateStr):
     # 데이터 저장
     try:
         dst = getFullPath(parseDir(confs["SAVE_DIR"]), confs["EFF_FILE"])
-        with open(dst, 'a', newline='') as csvFile:
-            writer = csv.writer(csvFile)
-            if os.path.getsize(dst) == 0:
-                writer.writerow(getEffHeader(modules, stacks))
-            writer.writerow(results)
+        saveEff(dst, modules, stacks, results)
         print("successfully updated efficiency file.")
-    except Exception as ex3:
-        print("Error in updating efficiency file. ", ex3)
+    except Exception:
         return False
 
     return True
+
+# 저장할 파일명, 헤더, 결과를 받아 주어진 양식에 맞게 효율 데이터 저장
+def saveEff(dst, modules, stacks, results):
+    #   주어진 형식에 맞게 파일 저장
+    #   Parameters
+    #       dst: 저장할 파일의 이름 (directory 포함)
+    #       modules: 해당 모듈
+    #       stacks: 해당 스택
+    #       results: 저장된 데이터:  [날짜, 모듈 정보] 로 저장
+    #           모듈정보 = [모듈전체정보, 스택별 정보]
+    #           모듈전체정보 = [chE dischE EE VE]
+    #           스택별정보 = [chE dischE EE VE]
+    #           ex) M1, M2, S1, S2일 경우
+    #               [날짜, M1.chE, M1.dischE, M1.EE, M1.VE, M1.S1.chE, M1.S1.dischE, M1.S1.EE, M1.S1.VE, M1.S2.chE, M1.S2.dischE, M1.S2.EE, M1.S2.VE,
+    #                      M2.chE, M2.dischE, M2.EE, M2.VE, M2.S1.chE, M2.S1.dischE, M2.S1.EE, M2.S1.VE, M2.S2.chE, M2.S2.dischE, M2.S2.EE, M2.S2.VE]
+    #   프린트할 데이터 순서
+    #       [날짜, 모듈전체정보, 스택별정보]
+    #       모듈전체정보 = [chE dischE EE VE]
+    #                   각각 성분은 모듈에 대해 반복
+    #       스택별정보 = [chE dischE EE VE]
+    #                   각각 성분은 스택에 대해 반복
+    #
+
+
+    oldHeader = getOriginalEffHeader(modules, stacks)
+    newHeader = getEffHeader(modules, stacks)
+
+    # dictionary로 만들어줌
+    oldData = dict(zip(oldHeader, results))
+
+    # newHeader 순서에 맞게 정리한 후 list화 해줌
+    newData = pd.DataFrame(oldData, columns=newHeader, index=["0"]).iloc[0].tolist()
+
+    try:
+        with open(dst, 'a', newline='') as csvFile:
+            writer = csv.writer(csvFile)
+            if os.path.getsize(dst) == 0:
+                writer.writerow(newHeader)
+            writer.writerow(newData)
+    except Exception as ex:
+        print("Error in updating efficiency file. ", ex)
+
+    return
+
+# 효율 정보 데이터가 저장된 그대로의 헤더
+def getOriginalEffHeader(modules, stacks):
+    #
+    #   Parameters
+    #       modules: 사용할 모듈 번호 (in list)
+    #       stacks: 사용할 스택 번호 (in list)
+    #   efficiency header의 구조
+    #       [날짜, 모듈 정보] 로 저장
+    #           모듈정보 = [모듈전체정보, 스택별 정보]
+    #           모듈전체정보 = [chE dischE EE VE CE]
+    #           스택별정보 = [chE dischE EE VE CE]
+    #           ex) M1, M2, S1, S2일 경우
+    #               [날짜, M1.chE, M1.dischE, M1.EE, M1.VE, M1. CE, M1.S1.chE, M1.S1.dischE, M1.S1.EE, M1.S1.VE, M1.S1.CE, M1.S2.chE, M1.S2.dischE, M1.S2.EE, M1.S2.VE, M1.S2.CE,
+    #                      M2.chE, M2.dischE, M2.EE, M2.VE, M2. CE, M2.S1.chE, M2.S1.dischE, M2.S1.EE, M2.S1.VE, M2.S1.CE, M2.S2.chE, M2.S2.dischE, M2.S2.EE, M2.S2.VE, M2.S2.CE]
+    #
+    header = ['Date']
+    data = ['chE', 'dischE', 'EE', 'VE', 'CE']
+
+    for m in modules:
+        m_str = 'M' + str(m) + '.'
+        for d in data:
+            header = header + [m_str + d]
+        for s in stacks:
+            s_str = m_str + 'S' + str(s) + '.'
+            for d in data:
+                header = header + [s_str+d]
+
+    return header
 
 # efficiency file의 헤더를 쓴다
 def getEffHeader(modules, stacks):
@@ -406,18 +473,24 @@ def getEffHeader(modules, stacks):
     #       modules: 사용할 모듈 번호 (in list)
     #       stacks: 사용할 스택 번호 (in list)
     #   efficiency header의 구조
-    #       [시간, 모듈 1 정보, 모듈 2 정보...]
-    #       모듈 정보 = [스택 1 정보, 스택 2 정보, ]
-    #       스택 정보 = charge energy, discharge energy, voltage efficiency, energy efficiency
+    #       [시간, 모듈전체정보, 스택별정보]
+    #       모듈전체정보 = [chE dischE EE VE CE]
+    #                   각각 성분은 모듈에 대해 반복
+    #       스택별정보 = [chE dischE EE VE CE]
+    #                   각각 성분은 스택에 대해 반복
 
     header = ['Date']
-
+    data = ['chE', 'dischE', 'EE', 'VE', 'CE']
+    for d in data:
+        for m in modules:
+            m_str = 'M'+str(m)+'.'
+            header = header + [m_str + d]
     for m in modules:
-        m_str = 'M'+str(m)+'.'
-        header = header + [m_str + 'chE', m_str + 'dischE', m_str + 'VE', m_str + 'EE']
-        for s in stacks:
-            s_str = m_str + 'S'+str(s)+'.'
-            header = header + [s_str + 'chE', s_str + 'dischE', s_str + 'VE', s_str + 'EE']
+        m_str = 'M' + str(m) + '.'
+        for d in data:
+            for s in stacks:
+                s_str = m_str + 'S'+str(s)+'.'
+                header = header + [s_str + d]
     return header
 
 # Voltage, Cur, dt를 받아 charge energy, discharge energy, EE, VE를 계산
@@ -428,7 +501,7 @@ def calEnergyAndEff(vol, cur, dt):
     #       cur: current (dataframe 형식)
     #       dt: delta t in hr (dataframe 형식)
     #   Return
-    #       [charge energy, discharge energy, voltage efficiency, energy efficiency]
+    #       [charge energy, discharge energy, energy efficiency, voltage efficiency]
     #
 
     MIN_POWER = 2000    # in W, 이 이상의 power가 아니면 없는 것으로 간주함
@@ -446,25 +519,40 @@ def calEnergyAndEff(vol, cur, dt):
     # 충전, 방전이 모두 일어난 경우에만 계산
     if chE != 0 and dischE!=0:
         # EE 계산
-        EE = round( dischE / chE, EFF_DECIMAL)
+        EE = round(dischE / chE, EFF_DECIMAL)
         # 평균 충전전압 (충전 시 voltage 합 / 충전 시간 수 합)
         avgVch = (vol * ifCharge).sum() / ifCharge.sum()
         # 평균 방전전압 (방전 시 voltage 합 / 방전 시간 수 합)
         avgVdisch = (vol * ifDischarge).sum() / ifDischarge.sum()
         # VE 계산 (평균 방전전압/평균 충전전압)
-        avgVdisch = 0  # 방전이 없으면 0으로 표시
+        VE = round(avgVdisch / avgVch, EFF_DECIMAL)
+        # CE 계산 (EE/VE)
+        CE = round(EE / VE, EFF_DECIMAL)
     else:
-        EE = 0 # 충전이 안되었을 경우 0으로 표기
-        VE = 0
-    return [chE, dischE, VE, EE]
+        EE = 0  # 충전 혹은 방전이 안되면 0으로 표기
+        VE = 0  # 충전 혹은 방전이 안되면 0으로 표기
+        CE = 0
+    return [chE, dischE, EE, VE, CE]
 
 if __name__ == "__main__":
 
     # 데이터 세팅 저장
     confs = setConfig()
 
+    # # 사용할 모듈번호 list
+    # modules = list(map(int, confs['MODULES'].split(confs['MS_SEP'])))
+    # # 사용할 스택번호 list
+    # stacks = list(map(int, confs['STACKS'].split(confs['MS_SEP'])))
+    #
+    # originalHeader = getOriginalEffHeader(modules, stacks)
+    # newHeader = getEffHeader(modules, stacks)
+    #
+    # oldData = pd.DataFrame(results, header=originalHeader, index=None)
+    #
+    # newData = pd.DataFrame(header=originalHeader, index=None)
+
     start = "190120"
-    end = "190120"
+    end = "190121"
     dateFormat = "yymmdd"
 
     startD = getDate(start, dateFormat)
