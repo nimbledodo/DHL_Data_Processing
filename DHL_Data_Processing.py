@@ -50,6 +50,7 @@ def setConfig():
     confs["MONTHLY_FILE"] = "monthlyHeader.csv" # montly 헤더파일명
     confs["TMPL_DAILY"] = "templateDaily.csv"    # daily 저장파일의 헤더가 기록된 파일명
     confs["RAW_DIR"] = cwd  # Raw 데이터가 저장된 폴더
+    confs["RAW_PREFIX"] = "r_" # Raw 데이터를 읽어오고 난 후 파일이름 prefix
     confs["SAVE_DIR"] = cwd  # 데이터가 저장될 폴더
     confs["SAVE_SKIP"] = 1  # daily 데이터를 skip할 간격
     confs["SAVE_PREFIX"] = "d_"  # 데이터는 prefix+날짜명.csv 로 저장됨
@@ -137,26 +138,31 @@ def processData(confs, rawName):
         print("Error in processing raw file: ", rawName, ex)
         return False
 
+    # rawfile prefix가 제거된 파일 이름
+    rawName_wo_prefix = rawName[len(confs["RAW_PREFIX"]):]
+
+    # daily 파일 저장하기
     try:
         # 헤더만들기
+        dailyfile = confs["SAVE_PREFIX"] + rawName_wo_prefix
         src = getFullPath(confs["HDR_DIR"], confs["TMPL_DAILY"])
-        dst = getFullPath(confs["SAVE_DIR"], confs["SAVE_PREFIX"]+rawName)
+        dst = getFullPath(confs["SAVE_DIR"], dailyfile)
         shutil.copyfile(src,dst)
         # 파일 쓰기
         newDf[::confs["SAVE_SKIP"]].to_csv(dst, mode='a', index=False, header=None)  #일정시간 간격으로 추출한 것 저장
-        print("Successfully generated daily file: ", confs["SAVE_PREFIX"]+rawName)
+        print("Successfully generated daily file: ", dailyfile)
         os.remove(rawfile)
     except Exception as ex1:
-        print("Cannot save daily file: ", rawName,  ex)
+        print("Cannot save daily file: ", dailyfile,  ex)
         return False
 
     # monthly data 저장하기
-    success = makeMonthlyData(confs, newDf[::confs["MONTHLY_SKIP"]], getMonthlyFileName(confs, rawName))
+    success = makeMonthlyData(confs, newDf[::confs["MONTHLY_SKIP"]], getMonthlyFileName(confs, rawName_wo_prefix))
     if not success:
         return False
 
     # efficiency 계산하기
-    dateStr = getDate(rawName, 'YYYY-MM-DD.csv').isoformat()
+    dateStr = getDate(rawName, confs["RAW_PREFIX"]+'YYYY-MM-DD.csv').isoformat()
     success = calculateEff(confs, newDf[::confs["EFF_SKIP"]], dateStr)
 
     return success
@@ -273,7 +279,7 @@ def getRemoteFile(confs, filename):
         ftp.connect(confs["FTP_SERVER"], confs["FTP_PORT"])
         ftp.login(confs["FTP_ID"], confs["FTP_PW"])
         ftp.cwd(parseDir(confs["FTP_DIR"]))
-        fd = open(parseDir(confs["RAW_DIR"]) + "/" + filename, 'wb')
+        fd = open(parseDir(confs["RAW_DIR"]) + "/" + confs["RAW_PREFIX"] + filename, 'wb')
         ftp.retrbinary("RETR " + filename, fd.write)
         fd.close()
         print ("Successfully downloaded the raw data: ", filename)
@@ -653,7 +659,7 @@ if __name__ == "__main__":
         success = getRemoteFile(confs, filename)
 
         # rawCsv을 받아 daily csv 저장, monthly csv 업데이트, 시스템 및 스택 효율정보 업데이트
-        success = processData(confs, filename)
+        success = processData(confs, confs["RAW_PREFIX"]+filename)
 
         # 함수 실행에 실패하면 다음 날짜로 진행하지 않음
         if not success:
@@ -667,5 +673,5 @@ if __name__ == "__main__":
         # 이것도 script 파일로 처리 필요
 
     # 구글 시트의 매일 저장된 데이터를 읽어 원하는 column만 정해진 기간 동안 일정 간격을 두고 뽑아서 csv로 저장 혹은 그래프 그릴 수 있는 함수 만들기!
-    
+
     pass
