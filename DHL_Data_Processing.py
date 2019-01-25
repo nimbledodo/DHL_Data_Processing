@@ -21,6 +21,7 @@ import numpy as np
 import os
 import pandas as pd
 import shutil
+import sys
 
 
 # 데이터 처리 기본 세팅 설정
@@ -28,14 +29,18 @@ def setConfig():
     confs = {}
     cwd = os.getcwd()   # 현재 디렉토리
     # 인자가 없을 경우 기본값
-    CONF_INIT = "init.conf" # 변경을 원하는 default variable을 저장하는 파일명
-    CONF_DIR = cwd # 기본값은 실행경로과 동일한 경로
+    confs["CONF_INIT"] = "init.conf" # 변경을 원하는 default variable을 저장하는 파일명
+    confs["CONF_DIR"] = cwd # 기본값은 실행경로과 동일한 경로
+    confs["START"] = "190101"    # 데이터처리 시작날짜
+    confs["END"] = "190101"  # 데이터처리 종료날짜
+    confs["DATE_FMT"] = "yymmdd"  # 날짜표기형식
+
     # 인자가 있을 경우 argv[1]은 파일명, argv[2]는 폴더 경로
     try:
-        if len(sys.argv)>=2:
-            CONF_INIT = sys.argv[1] #CONF_INIT 파일명
-        if len(sys.argv)==3:
-            CONF_DIR = sys.argv[2] #CONF_INIT 파일 저장 경로
+        if len(sys.argv)>=2:    # 인자가 하나라도 있을 경우
+            for i in range(len(sys.argv)-1):
+                name = sys.argv[i+1].split("=")[0].upper()  # = 앞에 있는 것이 이름
+                confs[name] = sys.argv[i+1].split("=")[1]   # = 뒤에 있는 것이 설정값
     except:
         pass
 
@@ -65,9 +70,9 @@ def setConfig():
     # CONF_DIR가 공란이면 현재 디렉토리에서 CONF_INIT을 찾음
 
     try:
-        os.chdir(parseDir(CONF_DIR))
-        lines = open(CONF_INIT, 'r', encoding='utf-8').readlines()
-        print("Reading config file: "+getFullPath(CONF_DIR, CONF_INIT))
+        os.chdir(parseDir(confs["CONF_DIR"]))
+        lines = open(confs["CONF_INIT"], 'r', encoding='utf-8').readlines()
+        print("Reading config file: "+getFullPath(confs["CONF_DIR"], confs["CONF_INIT"]))
     except:
         # 폴더나 파일이 존재하지 않으면 기본값 그대로 사용
         print("Config file does not exist")
@@ -613,13 +618,24 @@ def tempCalculateEff(confs, date):
     return True
 
 if __name__ == "__main__":
+    #
+    # argument
+    #   DHL_DATA_Processing.py (arg1) (arg2) (arg3) (arg4) (arg5)
+    #   arg 형식
+    #   name=value (공백넣지 말 것, name은 대소문자 구분 안함)
+    #       CONF_INIT: 설정 읽을 파일명
+    #       CONF_DIR: CONF_INIT 데이터가 저장된 경로
+    #       start:  데이터 처리 시작날짜
+    #       end: 데이터 처리 종료날짜
+    #       date_fmt: 날짜표기포맷 (ex: yymmdd)
+    #
 
     # 데이터 세팅 저장
     confs = setConfig()
 
-    start = "180316"
-    end = "190114"
-    dateFormat = "yymmdd"
+    start = confs["START"]
+    end = confs["END"]
+    dateFormat = confs["DATE_FMT"]
 
     startD = getDate(start, dateFormat)
     endD = getDate(end, dateFormat)
@@ -631,18 +647,18 @@ if __name__ == "__main__":
         filename = isodate+'.csv'
         print("Processing: ", isodate)
 
-        tempCalculateEff(confs, startD + datetime.timedelta(day))
+        # tempCalculateEff(confs, startD + datetime.timedelta(day))
 
-        # # ftp 접속하여 csv 파일 받아옴
-        # success = getRemoteFile(confs, filename)
-        #
-        # # rawCsv을 받아 daily csv 저장, monthly csv 업데이트, 시스템 및 스택 효율정보 업데이트
-        # success = processData(confs, filename)
-        #
-        # # 함수 실행에 실패하면 다음 날짜로 진행하지 않음
-        # if not success:
-        #     print("Quit due to error, day = ", isodate)
-        #     break
+        # ftp 접속하여 csv 파일 받아옴
+        success = getRemoteFile(confs, filename)
+
+        # rawCsv을 받아 daily csv 저장, monthly csv 업데이트, 시스템 및 스택 효율정보 업데이트
+        success = processData(confs, filename)
+
+        # 함수 실행에 실패하면 다음 날짜로 진행하지 않음
+        if not success:
+            print("Quit due to error, day = ", isodate)
+            break
 
     # 구글드라이브의 요금분석 데이터 업데이트
         # 이건 script 파일로 처리 필요
@@ -651,5 +667,5 @@ if __name__ == "__main__":
         # 이것도 script 파일로 처리 필요
 
     # 구글 시트의 매일 저장된 데이터를 읽어 원하는 column만 정해진 기간 동안 일정 간격을 두고 뽑아서 csv로 저장 혹은 그래프 그릴 수 있는 함수 만들기!
-
+    
     pass
